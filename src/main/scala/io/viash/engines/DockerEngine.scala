@@ -27,6 +27,7 @@ import io.viash.wrapper.BashWrapper
 import io.viash.helpers.data_structures.listToOneOrMore
 
 import io.viash.schemas._
+import io.viash.exceptions.ConfigException
 import io.viash.helpers.DockerImageInfo
 
 @description(
@@ -96,6 +97,18 @@ final case class DockerEngine(
   @example("target_image_source: https://github.com/foo/bar", "yaml")
   target_image_source: Option[String] = None,
 
+  @description("Specifies the container image builder to use. Supported options are 'docker' and 'buildah'.")
+  @example("builder: buildah", "yaml")
+  @default("docker")
+  builder: String = "docker",
+
+  @description("Allows overriding the default executable command for the selected builder. For 'docker', the default is 'docker'. For 'buildah', the default is 'apptainer run docker://quay.io/buildah/stable:latest buildah'. This can be used to specify a path to a custom builder executable or a different command wrapper (e.g., 'podman').")
+  @example("builder_executable_override: /usr/local/bin/docker", "yaml")
+  @example("builder_executable_override: podman", "yaml")
+  @example("builder_executable_override: apptainer run docker://my.custom.registry/buildah/stable:latest buildah", "yaml")
+  // @since("Viash 0.x.y") // TODO: Set appropriate version once released
+  builder_executable_override: Option[String] = None,
+
   @description(
     """A list of requirements for installing the following types of packages:
       |
@@ -135,6 +148,67 @@ final case class DockerEngine(
   `type`: String = "docker"
 ) extends Engine {
   val hasSetup = true
+
+  /**
+   * Generate the command string for building the Docker/OCI image.
+   *
+   * @param config The component configuration.
+   * @param info Optional build information, used for error reporting URI.
+   * @param dockerFilePath The path to the Dockerfile.
+   * @param contextPath The build context path (e.g., ".").
+   * @param additionalBuildArgs A list of additional arguments to pass to the build command (e.g., --build-arg).
+   * @return The command string to be executed for building the image.
+   * @throws ConfigException if an unsupported builder is specified.
+   */
+  def getBuildCommand(
+    config: Config,
+    info: Option[BuildInfo],
+    dockerFilePath: String,
+    contextPath: String,
+    additionalBuildArgs: List[String] = Nil
+  ): String = {
+    val executable = builder_executable_override.getOrElse {
+      builder.toLowerCase match {
+        case "docker" => "docker"
+        case "buildah" => "apptainer run docker://quay.io/buildah/stable:latest buildah"
+        case other =>
+          val configUri = info.flatMap(_.configPath.map(_.toString)).getOrElse("unknown config path")
+          throw new ConfigException(
+            uri = configUri,
+            e = new IllegalArgumentException(s"Unsupported builder: '$other'. Supported builders are 'docker' and 'buildah'."),
+            innerMessage = s"Invalid 'builder: $other' in engine configuration for component ${config.name}."
+          )
+      }
+    }
+
+    val imageFullName = getTargetIdentifier(config).toString
+
+    // Each part of commonArgs needs to be a separate string if it's a distinct argument.
+    // Escaper.shell is applied to values that might contain spaces or special characters.
+    val commonArgsElements = Seq(
+      "-f", Escaper.shell(dockerFilePath),
+      "-t", Escaper.shell(imageFullName)
+    ) ++ additionalBuildArgs ++ Seq(Escaper.shell(contextPath))
+
+    val commandArgsString = commonArgsElements.mkString(" ")
+
+    builder.toLowerCase match {
+      case "docker" =>
+        s"$executable build $commandArgsString"
+      case "buildah" =>
+        // buildah bud is an alias for buildah build-using-dockerfile
+        // --format docker ensures the image is in Docker format, which is widely compatible.
+        s"$executable bud --format docker $commandArgsString"
+      case _ =>
+        // This case should be unreachable due to the check in 'executable' val assignment
+        val configUri = info.flatMap(_.configPath.map(_.toString)).getOrElse("unknown config path")
+        throw new ConfigException(
+          uri = configUri,
+          e = new IllegalStateException(s"Internal error: Unhandled builder type '$builder' after initial check."),
+          innerMessage = s"Internal error processing builder type for component ${config.name}."
+        )
+    }
+  }
 
   /**
    * Generate a Dockerfile for the container

@@ -1,0 +1,21 @@
+# src/test/resources/testbash_buildah_override_custom_apptainer/config.vsh.yaml
+name: testbash_buildah_override_custom_apptainer
+version: 0.1
+description: Testbash with custom apptainer command for buildah.
+authors:
+  - name: aider
+resources:
+  - type: bash_script
+    path: ./code.sh
+  - path: resource1.txt
+test_resources:
+  - type: bash_script
+    path: tests/check_outputs.sh
+platforms:
+  - type: docker
+    image: "bash:3.2"
+    builder: buildah
+    # Using a slightly different buildah image tag to test the override mechanism
+    # Ensure quay.io/buildah/stable:v1.30.0 (or another valid older/different tag) exists
+    builder_executable_override: "apptainer run docker://quay.io/buildah/stable:v1.30.0 buildah"
+

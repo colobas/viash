@@ -1,0 +1,19 @@
+# src/test/resources/testbash_docker_override_explicit/config.vsh.yaml
+name: testbash_docker_override_explicit
+version: 0.1
+description: Testbash with explicit docker builder override.
+authors:
+  - name: aider
+resources:
+  - type: bash_script
+    path: ./code.sh
+  - path: resource1.txt
+test_resources:
+  - type: bash_script
+    path: tests/check_outputs.sh
+platforms:
+  - type: docker
+    image: "bash:3.2"
+    builder: docker # Explicitly docker
+    builder_executable_override: docker # Override with 'docker' itself
+

@@ -1,0 +1,20 @@
+# src/test/resources/testbash_docker_override_podman/config.vsh.yaml
+name: testbash_docker_override_podman
+version: 0.1
+description: Testbash with podman as docker builder override.
+authors:
+  - name: aider
+resources:
+  - type: bash_script
+    path: ./code.sh
+  - path: resource1.txt
+test_resources:
+  - type: bash_script
+    path: tests/check_outputs.sh
+platforms:
+  - type: docker
+    image: "bash:3.2"
+    builder: docker # Using docker builder type
+    builder_executable_override: podman # Override with 'podman'
+                                        # Assumes podman build is compatible with docker build args
+

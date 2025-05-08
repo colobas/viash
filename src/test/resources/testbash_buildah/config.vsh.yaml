@@ -1,0 +1,15 @@
+functionality:
+  name: testbash_buildah # Changed name to avoid conflicts if images are listed
+  namespace: viash_test
+  version: "1.0.0"
+  description: A simple bash component for testing with buildah.
+  authors: [{ name: "Test User", email: "test@example.com" }]
+  resources:
+    - type: bash_script
+      path: script.sh
+platforms:
+  - type: docker
+    image: "bash:4.0" # Base image for buildah
+    builder: buildah  # <<<< THIS IS THE NEW LINE
+  - type: native
+

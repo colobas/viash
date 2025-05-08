@@ -14,6 +14,7 @@ import io.viash.helpers.data_structures._
 
 class DockerSuite extends AnyFunSuite with BeforeAndAfterAll {
   Logger.UseColorOverride.value = Some(false)
+
   // which config to test
   private val configFile = getClass.getResource(s"/testbash/config.vsh.yaml").getPath
 
@@ -236,6 +237,100 @@ class DockerSuite extends AnyFunSuite with BeforeAndAfterAll {
     assert(!stdout.contains("/viash_automount"))
 
     assert(stdout.contains("INFO: Parsed input arguments"))
+  }
+
+  // Helper method for running build and basic execution tests
+  private def runBuildAndExecuteTest(
+    testName: String,
+    configResourcePath: String,
+    expectedOutputChecks: Seq[String => Boolean] = Seq.empty,
+    setupCommand: String = "cachedbuild" // "build" or "cachedbuild"
+  ): Unit = {
+    val testConfigFile = getClass.getResource(configResourcePath).getPath
+    assert(testConfigFile != null, s"$testName: Test config file '$configResourcePath' not found")
+
+    val tempFolder = IO.makeTemp(s"viash_tester_${testName.replaceAll("[^a-zA-Z0-9]", "_")}")
+    val componentConfig = Config.read(testConfigFile)
+    val executableFile = tempFolder.resolve(componentConfig.name).toFile
+
+    // Build the executable wrapper
+    TestHelper.testMain(
+      "build",
+      testConfigFile,
+      "--engine", "docker", // Still targeting the 'docker' platform type
+      "--runner", "executable",
+      "-o", tempFolder.toString
+    )
+    assert(executableFile.exists, s"$testName: Executable ${executableFile} should exist")
+    assert(executableFile.canExecute, s"$testName: Executable ${executableFile} should be executable")
+
+    // Build the Docker/OCI image
+    val setupOut = Exec.runCatch(
+      Seq(executableFile.toString, "---setup", setupCommand)
+    )
+    assert(setupOut.exitValue == 0, s"$testName: Image setup failed. Stdout:\n${setupOut.output}\nStderr:\n${setupOut.error}")
+
+    // Run the component
+    val runArgs = Seq(
+      executableFile.toString,
+      "---", // Separator for platform args if any, then component args
+      "--real_number", "3.14",
+      "--whole_number", "42",
+      "-s", s"hello from $testName"
+    )
+    val runOutput = Exec.runCatch(runArgs)
+
+    assert(runOutput.exitValue == 0, s"$testName: Running component failed. Stdout:\n${runOutput.output}\nStderr:\n${runOutput.error}")
+    assert(runOutput.output.contains("real_number: |3.14|"), s"$testName: Output did not contain expected real_number")
+    assert(runOutput.output.contains("whole_number: |42|"), s"$testName: Output did not contain expected whole_number")
+    assert(runOutput.output.contains(s"s: |hello from $testName|"), s"$testName: Output did not contain expected string")
+
+    expectedOutputChecks.foreach(check => assert(check(runOutput.output), s"$testName: Custom output check failed."))
+
+    // Clean up
+    IO.deleteRecursively(tempFolder)
+  }
+
+  test("Buildah: viash can build an image using buildah and run the component", DockerTest) {
+    runBuildAndExecuteTest(
+      testName = "BuildahDefault",
+      configResourcePath = "/testbash_buildah/config.vsh.yaml"
+    )
+  }
+
+  test("DockerOverrideExplicit: viash can build with explicit 'docker' override", DockerTest) {
+    runBuildAndExecuteTest(
+      testName = "DockerOverrideExplicit",
+      configResourcePath = "/testbash_docker_override_explicit/config.vsh.yaml"
+    )
+  }
+
+  test("DockerOverridePodman: viash can build with 'podman' override for docker builder", DockerTest) {
+    // This test assumes Podman is installed and behaves like Docker for 'build'
+    // It might require specific setup on the CI or local test environment if Podman is not available.
+    // Check if podman is available, skip if not.
+    val podmanAvailable = Exec.runCatch(Seq("podman", "--version")).exitValue == 0
+    if (podmanAvailable) {
+      runBuildAndExecuteTest(
+        testName = "DockerOverridePodman",
+        configResourcePath = "/testbash_docker_override_podman/config.vsh.yaml",
+        // Podman might output slightly different image IDs or messages during build,
+        // but the component execution should be the same.
+        // No specific output checks beyond standard component output needed here unless debugging.
+      )
+    } else {
+      pending // Mark test as pending if podman is not available
+      info("Skipping DockerOverridePodman test as Podman is not available in PATH.")
+    }
+  }
+
+  test("BuildahOverrideCustomApptainer: viash can build with custom apptainer command for buildah", DockerTest) {
+    runBuildAndExecuteTest(
+      testName = "BuildahOverrideCustomApptainer",
+      configResourcePath = "/testbash_buildah_override_custom_apptainer/config.vsh.yaml"
+      // We expect this to use a different buildah image version if the override is effective.
+      // The component output itself should remain standard.
+    )
   }
 
   override def afterAll(): Unit = {

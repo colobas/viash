@@ -145,6 +145,6 @@ class DockerEngineTest extends AnyFunSuite with Matchers {
 
     val command = engine.getBuildCommand(defaultConfig, None, defaultDockerFilePath, defaultContextPath)
 
-    command shouldBe s"docker build -f ${Escaper.shell(defaultDockerFilePath)} -t ${Escaper.shell(expectedImageManually)} ${Escaper.shell(defaultContextPath)}"
+    command shouldBe s"docker build -f ${Escaper.shell(defaultDockerFilePath)} -t ${Escaper.shell(expectedImage)} ${Escaper.shell(defaultContextPath)}"
   }
 }

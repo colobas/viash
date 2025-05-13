@@ -107,7 +107,7 @@ final case class ApptainerEngine(
       target_image_source(config, info).map(src => s"""SOURCE_REPO "${Escaper(src, quote = true)}"""")
     ).flatten.mkString("\n    ")
 
-    val allSetup = setup ::: (if (testing) test_setup else Nil)
+    val allSetup = if (testing) setup ::: test_setup else setup
     val postCommands = allSetup.flatMap(_.installCommands).map("    " + _) // Indent for %post section
 
     // %environment section: Viash might set some default env vars later, or users can add them via requirements.

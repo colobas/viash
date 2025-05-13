@@ -35,6 +35,7 @@ object Bash {
   lazy val ViashSourceDir: String = readUtils("ViashSourceDir")
   lazy val ViashFindTargetDir: String = readUtils("ViashFindTargetDir")
   lazy val ViashDockerFuns: String = readUtils("ViashDockerFuns")
+  lazy val ViashApptainerFuns: String = readUtils("ViashApptainerFuns")
   lazy val ViashLogging: String = readUtils("ViashLogging")
 
   def save(saveVariable: String, args: Seq[String]): String = {

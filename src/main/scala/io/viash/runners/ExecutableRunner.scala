@@ -97,6 +97,11 @@ final case class ExecutableRunner(
   @default("ifneedbepullelsecachedbuild")
   docker_setup_strategy: DockerSetupStrategy = IfNeedBePullElseCachedBuild,
 
+  @description("The Apptainer setup strategy to use when building an Apptainer engine environment. Similar to Docker: alwaysbuild, alwayspull, alwayspullelsebuild, ifneedbebuild, ifneedbepull, ifneedbepullelsebuild, donothing.")
+  @example("apptainer_setup_strategy: alwaysbuild", "yaml")
+  @default("ifneedbepullelsebuild") // A sensible default for Apptainer
+  apptainer_setup_strategy: String = "ifneedbepullelsebuild",
+
   @description("Provide runtime arguments to Docker. See the documentation on [`docker run`](https://docs.docker.com/engine/reference/run/) for more information.")
   @default("Empty")
   docker_run_args: OneOrMore[String] = Nil,
@@ -104,16 +109,23 @@ final case class ExecutableRunner(
   `type`: String = "executable"
 ) extends Runner {
 
+  // TODO: Create a proper sealed trait for ApptainerSetupStrategy if more complex logic is needed
+  // For now, string matching is used in ViashApptainerFuns.sh
+
   def generateRunner(config: Config, testing: Boolean): RunnerResources = {
     val engines = config.engines
     
+
     /*
      * Construct bashwrappermods
      */
-    val mods =
+    var mods =
       generateEngineVariable(config) ++
-      nativeConfigMods(config) ++
-      dockerConfigMods(config, testing)
+      nativeConfigMods(config)
+
+    // Conditionally add engine-specific mods
+    mods = mods ++ dockerConfigMods(config, testing)
+    mods = mods ++ apptainerConfigMods(config, testing)
 
     // create new bash script
     val mainScript = Some(BashScript(
@@ -174,6 +186,10 @@ final case class ExecutableRunner(
     val typeSetterStrs = engines.groupBy(_.`type`).map{ case (engineType, engineList) => 
       s""" ${oneOfEngines(engineList)} ; then
         |  VIASH_ENGINE_TYPE='${engineType}'""".stripMargin
+    }.toList ++ engines.groupBy(_.`type`).flatMap { // Ensure apptainer is also handled
+      case ("apptainer", engineList) => Some(s""" ${oneOfEngines(engineList)} ; then
+                                             |  VIASH_ENGINE_TYPE='apptainer'""".stripMargin)
+      case _ => None
     }
     val postParse =
       s"""
@@ -253,6 +269,163 @@ final case class ExecutableRunner(
 
     // compile bashwrappermods for Docker
     dmSetup ++ dmVol ++ dmChown ++ dmReqs ++ dmCmd
+  }
+
+  /*
+   * APPTAINER MODS
+   */
+  private def apptainerConfigMods(config: Config, testing: Boolean): BashWrapperMods = {
+    val engines = config.engines.flatMap {
+      case e: ApptainerEngine => Some(e)
+      case _ => None
+    }
+
+    if (engines.isEmpty) {
+      return BashWrapperMods()
+    }
+
+    val amSetup = apptainerGenerateSetup(config, config.build_info, testing, engines)
+    val amVol = apptainerDetectMounts(config) // Apptainer handles mounts differently, but good to have a placeholder
+    val amCmd = apptainerGenerateCommand(config)
+
+    amSetup ++ amVol ++ amCmd
+  }
+
+  private def apptainerGenerateSetup(
+    config: Config,
+    info: Option[BuildInfo],
+    testing: Boolean,
+    engines: List[ApptainerEngine]
+  ): BashWrapperMods = {
+    val commandsToCheck = config.requirements.commands ::: List("bash") // Basic check
+    val commandsToCheckStr = commandsToCheck.mkString("'", "' '", "'")
+
+    val definitionFiles = engines.map { engine =>
+      s"""
+        |  if [[ "$$engine_id" == "${engine.id}" ]]; then
+        |    cat << 'VIASHAPPTAINERDEF'
+        |${engine.definitionFile(config, info, testing)}
+        |VIASHAPPTAINERDEF
+        |  fi""".stripMargin
+    }
+
+    // Apptainer build options, e.g., --fakeroot. Could be configurable in ApptainerEngine.
+    // For now, hardcode --fakeroot as it's commonly needed for unprivileged builds.
+    val apptainerBuildOpts = engines.map { engine =>
+      s"""
+        |  if [[ "$$engine_id" == "${engine.id}" ]]; then
+        |    echo "--fakeroot" # Default to --fakeroot, can be made configurable
+        |  fi""".stripMargin
+    }
+
+    val preParse =
+      s"""${Bash.ViashApptainerFuns}
+        |
+        |# ViashApptainerDefinitionFile: print the Apptainer definition file to stdout
+        |# $$1    : engine identifier
+        |# return : Apptainer definition file required to run this component
+        |function ViashApptainerDefinitionFile {
+        |  local engine_id="$$1"
+        |${definitionFiles.mkString}
+        |}
+        |
+        |# ViashApptainerBuildOpts: return the arguments to pass to apptainer build
+        |# $$1    : engine identifier
+        |# return : arguments to pass to apptainer build
+        |function ViashApptainerBuildOpts {
+        |  local engine_id="$$1"
+        |${apptainerBuildOpts.mkString}
+        |}""".stripMargin
+
+    val parsers =
+      s"""
+        |        ---setup) # This will be caught by Docker's setup first if Docker is an option.
+        |            if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |              VIASH_MODE='setup'
+        |              VIASH_SETUP_STRATEGY="$$2"
+        |              shift 2
+        |            fi
+        |            ;;
+        |        ---setup=*)
+        |            if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |              VIASH_MODE='setup'
+        |              VIASH_SETUP_STRATEGY="$$(ViashRemoveFlags "$$1")"
+        |              shift 1
+        |            fi
+        |            ;;
+        |        ---definitionfile)
+        |            if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |              VIASH_MODE='definitionfile'
+        |              shift 1
+        |            fi
+        |            ;;
+        |        ---apptainer_image_id)
+        |            if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |              VIASH_MODE='apptainer_image_id'
+        |              shift 1
+        |            fi
+        |            ;;
+        |        ---debug) # Also potentially caught by Docker
+        |            if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |              VIASH_MODE='debug'
+        |              shift 1
+        |            fi
+        |            ;;""".stripMargin
+
+    val helpStrings =
+      s"""Viash built in Apptainer:
+         |    ---setup=STRATEGY
+         |        Setup the Apptainer image. Options: alwaysbuild, alwayspull, alwayspullelsebuild, ifneedbebuild, ifneedbepull, ifneedbepullelsebuild, donothing.
+         |        Default: ${apptainer_setup_strategy}
+         |    ---definitionfile
+         |        Print the Apptainer definition file to stdout.
+         |    ---apptainer_image_id
+         |        Print the Apptainer image SIF path to stdout.
+         |    ---debug
+         |        Enter the Apptainer container for debugging purposes (shell).""".stripMargin
+
+    val setApptainerImageId = engines.map { engine =>
+      s"""[[ "$$VIASH_ENGINE_ID" == '${engine.id}' ]]; then
+        |    VIASH_APPTAINER_IMAGE_ID='${engine.getTargetIdentifier(config)}'
+        |    VIASH_APPTAINER_SOURCE_IMAGE='${engine.image}'""".stripMargin
+    }.mkString("if ", "\n  elif ", "\n  fi")
+
+    val postParse =
+      s"""
+        |if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |  ViashApptainerInstallationCheck
+        |
+        |  $setApptainerImageId
+        |
+        |  if [ "$$VIASH_MODE" == "definitionfile" ]; then
+        |    ViashApptainerDefinitionFile "$$VIASH_ENGINE_ID"
+        |    exit 0
+        |  elif [ "$$VIASH_MODE" == "apptainer_image_id" ]; then
+        |    echo "$$VIASH_APPTAINER_IMAGE_ID"
+        |    exit 0
+        |  elif [[ "$$VIASH_MODE" == "debug" ]]; then
+        |    # Ensure image exists before debugging
+        |    ViashApptainerSetup "$$VIASH_APPTAINER_IMAGE_ID" "$$VIASH_APPTAINER_SOURCE_IMAGE" "${apptainer_setup_strategy}" "$$(ViashApptainerBuildOpts "$$VIASH_ENGINE_ID")" "ViashApptainerDefinitionFile \"$$VIASH_ENGINE_ID\""
+        |    VIASH_CMD="apptainer shell $$VIASH_APPTAINER_IMAGE_ID"
+        |    ViashNotice "+ $$VIASH_CMD"
+        |    eval $$VIASH_CMD
+        |    exit
+        |  elif [ "$$VIASH_MODE" == "setup" ]; then
+        |    ViashApptainerSetup "$$VIASH_APPTAINER_IMAGE_ID" "$$VIASH_APPTAINER_SOURCE_IMAGE" "$$VIASH_SETUP_STRATEGY" "$$(ViashApptainerBuildOpts "$$VIASH_ENGINE_ID")" "ViashApptainerDefinitionFile \"$$VIASH_ENGINE_ID\""
+        |    ViashApptainerCheckCommands "$$VIASH_APPTAINER_IMAGE_ID" $commandsToCheckStr
+        |    exit 0
+        |  fi
+        |
+        |  ViashApptainerSetup "$$VIASH_APPTAINER_IMAGE_ID" "$$VIASH_APPTAINER_SOURCE_IMAGE" "${apptainer_setup_strategy}" "$$(ViashApptainerBuildOpts "$$VIASH_ENGINE_ID")" "ViashApptainerDefinitionFile \"$$VIASH_ENGINE_ID\""
+        |  ViashApptainerCheckCommands "$$VIASH_APPTAINER_IMAGE_ID" $commandsToCheckStr
+        |fi""".stripMargin
+
+    BashWrapperMods(
+      preParse = preParse,
+      helpStrings = List(("Apptainer", helpStrings)),
+      parsers = parsers,
+      postParse = postParse
+    )
   }
 
   private def dockerGenerateSetup(
@@ -514,9 +687,6 @@ final case class ExecutableRunner(
     )
   }
 
-
-
-
   private def dockerAddChown(config: Config): BashWrapperMods = {
     // TODO: how are mounts added to this section?
     val preRun =
@@ -560,7 +730,6 @@ final case class ExecutableRunner(
     )
   }
 
-
   private def dockerGenerateCommand(config: Config): BashWrapperMods = {
 
     // collect runtime docker arguments
@@ -591,5 +760,66 @@ final case class ExecutableRunner(
       preParse = preParse,
       preRun = preRun
     )
+  }
+
+  private def apptainerDetectMounts(config: Config): BashWrapperMods = {
+    val args = config.getArgumentLikes(includeMeta = true)
+
+    // Apptainer automatically mounts $HOME, /tmp, cwd etc.
+    // Explicit binds are via -B /src:/dest or -B /path (if src=dest)
+    // This logic will be simpler than Docker's custom automount prefix.
+    // We just need to ensure paths are absolute for -B.
+    val detectMounts = args.flatMap {
+      case arg: FileArgument =>
+        // For Apptainer, we mainly need to ensure the paths exist and are accessible.
+        // Absolute paths are preferred for explicit binds if needed.
+        // We'll collect paths that might need explicit binding if they are outside standard bind locations.
+        // For now, this is a simplified version. A more robust solution would check if paths
+        // are already covered by Apptainer's default binds.
+        Some(
+          s"""
+            |if [ ! -z "$$${arg.VIASH_PAR}" ]; then
+            |  # Convert to absolute path for potential binding
+            |  abs_path=$$(ViashAbsolutePath "$$${arg.VIASH_PAR}")
+            |  # Add to a list of paths to consider for -B, if not standard (e.g. not under /home, /tmp, cwd)
+            |  # This is a placeholder for more complex logic. For now, just pass it.
+            |  # Apptainer is quite good at finding paths.
+            |  # If explicit binding is needed, it would be:
+            |  # VIASH_APPTAINER_BINDS+=( "-B $$abs_path" )
+            |fi""".stripMargin
+        )
+      case _ => None
+    }
+
+    if (detectMounts.isEmpty) {
+      return BashWrapperMods()
+    }
+
+    val preParse =
+      s"""
+         |${Bash.ViashAbsolutePath} # Already included by Docker, but good for standalone
+         |VIASH_APPTAINER_BINDS=()""".stripMargin
+
+    val preRun =
+      s"""
+        |if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then${detectMounts.mkString("")}
+        |  # VIASH_APPTAINER_BINDS will contain -B options if any were explicitly added.
+        |fi
+        |""".stripMargin
+
+    BashWrapperMods(
+      preParse = preParse,
+      preRun = preRun
+    )
+  }
+
+  private def apptainerGenerateCommand(config: Config): BashWrapperMods = {
+    val preRun =
+      s"""
+        |if [[ "$$VIASH_ENGINE_TYPE" == "apptainer" ]]; then
+        |  # VIASH_APPTAINER_BINDS array can be used here if explicit binds are constructed
+        |  VIASH_CMD="apptainer exec $${VIASH_APPTAINER_BINDS[@]} $$VIASH_APPTAINER_IMAGE_ID"
+        |fi""".stripMargin
+    BashWrapperMods(preRun = preRun)
   }
 }

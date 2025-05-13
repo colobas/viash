@@ -19,58 +19,41 @@ package io.viash.helpers
 
 import io.viash.config.Config
 
-case class DockerImageInfo(
+case class ContainerImageInfo(
   name: String, 
   tag: String = "latest", 
   registry: Option[String] = None,
   organization: Option[String] = None,
-  `package`: Option[String] = None
+  `package`: Option[String] = None,
+  containerType: String = "docker" // "docker" or "apptainer"
 ) {
   override def toString: String = {
-    registry.map(_ + "/").getOrElse("") +
-    organization.map(_ + "/").getOrElse("") +
-    `package`.map(_ + "/").getOrElse("") +
-      name + ":" + tag
+    if (containerType == "apptainer") {
+      // For Apptainer, return the name directly as it should already contain the full path or URI
+      name
+    } else {
+      // For Docker, use the standard Docker format
+      registry.map(_ + "/").getOrElse("") +
+      organization.map(_ + "/").getOrElse("") +
+      `package`.map(_ + "/").getOrElse("") +
+        name + ":" + tag
+    }
   }
 
   def toMap: Map[String, String] = {
     val image = organization.map(_ + "/").getOrElse("") + `package`.map(_ + "/").getOrElse("") + name
-    
+
     registry.map(r => Map("registry" -> r)).getOrElse(Map()) ++
     Map(
       "image" -> image,
-      "tag" -> tag
+      "tag" -> tag,
+      "containerType" -> containerType
     )
   }
 }
 
-object Docker {
+object Container {
   private val TagRegex = "^(.*):(.*)$".r
-
-  /**
-   * Helper method to generate a Docker image string
-   */
-  def imageStr(
-    name: String,
-    tag: String = "latest",
-    registry: Option[String] = None,
-    organization: Option[String] = None,
-    `package`: Option[String] = None
-  ): String = {
-    registry.map(_ + "/").getOrElse("") +
-    organization.map(_ + "/").getOrElse("") +
-    `package`.map(_ + "/").getOrElse("") +
-      name + ":" + tag
-  }
-
-  /**
-   * Parse a Docker image string into a DockerImageInfo object
-   */
-  def parseImage(image: String): DockerImageInfo = {
-    // This is a placeholder for future implementation
-    // For now, just return a basic DockerImageInfo with the image as name
-    DockerImageInfo(name = image)
-  }
 
   def getImageInfo(
     config: Option[Config] = None,
@@ -81,7 +64,8 @@ object Docker {
     tag: Option[String] = None,
     engineId: Option[String] = None,
     namespaceSeparator: Option[String] = None,
-  ): DockerImageInfo = {
+    containerType: String = "docker"
+  ): ContainerImageInfo = {
 
     assert(config.isDefined == namespaceSeparator.isDefined, "Both config and namespaceSeparator should be defined or not defined")
 
@@ -102,7 +86,7 @@ object Docker {
     }
 
     val tagSuffix = engineId match {
-      case Some(id) if id != "docker" => s"-$id"
+      case Some(id) if id != "docker" && id != "apptainer" => s"-$id"
       case _ => ""
     }
 
@@ -116,12 +100,13 @@ object Docker {
       Some("latest" + tagSuffix)
     }
 
-    DockerImageInfo(
+    ContainerImageInfo(
       name = actualName.get,
       tag = actualTag.get,
       registry = registry,
       organization = organization,
-      `package` = `package`
+      `package` = `package`,
+      containerType = containerType
     )
   }
 

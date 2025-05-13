@@ -25,7 +25,7 @@ import io.viash.helpers.circe._
 import io.viash.helpers.Helper
 import io.viash.helpers.Escaper
 import io.viash.helpers.Bash
-import io.viash.helpers.DockerImageInfo
+import io.viash.helpers.ContainerImageInfo
 import io.circe.{Printer => JsonPrinter, Json, JsonObject}
 import io.viash.config.dependencies.Dependency
 import java.nio.file.Path
@@ -44,6 +44,19 @@ object NextflowHelper {
   lazy val workflowHelper: String = readSource("WorkflowHelper.nf")
   lazy val profilesHelper: String = readSource("ProfilesHelper.config")
   lazy val dataflowHelper: String = readSource("DataflowHelper.nf")
+
+  // Apptainer profiles helper for Nextflow
+  lazy val apptainerProfilesHelper: String = """
+    |profiles {
+    |  standard {
+    |    process.container = null
+    |  }
+    |  apptainer {
+    |    apptainer.enabled = true
+    |    process.container = null
+    |  }
+    |}
+    |""".stripMargin
 
   def generateConfigStr(config: Config): String = {
     val configJson = config.asJson.dropEmptyRecursively

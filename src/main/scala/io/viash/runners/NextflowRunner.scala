@@ -20,14 +20,14 @@ package io.viash.runners
 import io.viash.config.Config
 import io.viash.config._
 import io.viash.config.arguments._
-import io.viash.helpers.{Docker, Bash, DockerImageInfo, Helper}
+import io.viash.helpers.{Docker, Bash, ContainerImageInfo, Container, Helper}
 import io.viash.helpers.circe._
 import io.circe.syntax._
 import io.circe.{Printer => JsonPrinter, Json, JsonObject}
 import io.viash.schemas._
 import io.viash.helpers.Escaper
 import io.viash.runners.{Runner, RunnerResources}
-import io.viash.engines.DockerEngine
+import io.viash.engines.{DockerEngine, ApptainerEngine}
 import io.viash.runners.nextflow._
 import io.viash.config.resources.{Executable, NextflowScript, PlainFile}
 
@@ -132,19 +132,32 @@ final case class NextflowRunner(
     )
   }
 
-  def containerDirective(config: Config): Option[DockerImageInfo] = {
+  def containerDirective(config: Config): Option[ContainerImageInfo] = {
     val engine = config.engines.find(p => p.id == container)
     engine match {
       case Some(de: DockerEngine) => 
-        Some(de.getTargetIdentifier(config))
+        val dockerImage = de.getTargetIdentifier(config)
+        Some(ContainerImageInfo(
+          name = dockerImage.name,
+          tag = dockerImage.tag,
+          registry = dockerImage.registry,
+          organization = dockerImage.organization,
+          `package` = dockerImage.`package`,
+          containerType = "docker"
+        ))
+      case Some(ae: ApptainerEngine) =>
+        Some(ContainerImageInfo(
+          name = ae.getTargetIdentifier(config),
+          containerType = "apptainer"
+        ))
       case Some(_) => 
-        throw new RuntimeException(s"NextflowRunner 'container' variable: Engine $container is not a Docker Engine")
+        throw new RuntimeException(s"NextflowRunner 'container' variable: Engine $container is not a supported container engine (Docker or Apptainer)")
       case None => None
       case null => ???
     }
   }
 
-  def renderNextflowConfig(config: Config, containerDirective: Option[DockerImageInfo]): String = {
+  def renderNextflowConfig(config: Config, containerDirective: Option[ContainerImageInfo]): String = {
     val versStr = config.version.map(ver => s"\n  version = '$ver'").getOrElse("")
 
     val descStr = config.description.map{des => 
@@ -162,8 +175,11 @@ final case class NextflowRunner(
 
     // TODO: define profiles
     val profileStr = 
-      if (containerDirective.isDefined || config.mainScript.map(_.`type`) == Some(NextflowScript.`type`)) {
+      if ((containerDirective.isDefined && containerDirective.get.containerType == "docker") || 
+          config.mainScript.map(_.`type`) == Some(NextflowScript.`type`)) {
         "\n\n" + NextflowHelper.profilesHelper
+      } else if (containerDirective.isDefined && containerDirective.get.containerType == "apptainer") {
+        "\n\n" + NextflowHelper.apptainerProfilesHelper
       } else {
         ""
       }
@@ -188,7 +204,7 @@ final case class NextflowRunner(
   }
 
   // interpreted from BashWrapper
-  def renderMainNf(config: Config, containerDirective: Option[DockerImageInfo]): String = {
+  def renderMainNf(config: Config, containerDirective: Option[ContainerImageInfo]): String = {
     if (config.mainScript.isEmpty) {
       throw new RuntimeException("No main script defined")
     }
@@ -206,7 +222,15 @@ final case class NextflowRunner(
 
     val directivesToJson = directives.copy(
       // if a docker engine is defined but the directives.container isn't, use the image of the docker engine as default
-      container = directives.container orElse containerDirective.map(cd => Left(cd.toMap)),
+      container = directives.container orElse containerDirective.map(cd => {
+        if (cd.containerType == "apptainer") {
+          // For Apptainer, use the Right variant with the image path/URI directly
+          Right(cd.toString)
+        } else {
+          // For Docker, use the Left variant with the image map
+          Left(cd.toMap)
+        }
+      }),
       // is memory requirements are defined but directives.memory isn't, use that instead
       memory = directives.memory orElse config.requirements.memoryAsBytes.map(_.toString + " B"),
       // is cpu requirements are defined but directives.cpus isn't, use that instead

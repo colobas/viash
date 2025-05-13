@@ -16,7 +16,8 @@ class ApptainerRunnerTest extends AnyFunSuite {
       name = "test_component",
       resources = List(
         BashScript(
-          text = Some("echo 'Hello World'")
+          text = Some("echo 'Hello World'"),
+          dest = Some("script.sh")
         )
       ),
       engines = List(
@@ -36,7 +37,12 @@ class ApptainerRunnerTest extends AnyFunSuite {
     val scriptText = resources.mainScript.get.text.get
 
     // Check for Apptainer functions
-    assert(scriptText.contains("ViashApptainerFuns.sh"))
+    assert(scriptText.contains("function ViashApptainerInstallationCheck"))
+    assert(scriptText.contains("function ViashApptainerRemoteImageCheck"))
+    assert(scriptText.contains("function ViashApptainerLocalImageCheck"))
+    assert(scriptText.contains("function ViashApptainerDefinitionFile"))
+    assert(scriptText.contains("function ViashApptainerBuildOpts"))
+    assert(scriptText.contains("VIASH_APPTAINER_IMAGE_ID"))
     assert(scriptText.contains("ViashApptainerInstallationCheck"))
     assert(scriptText.contains("ViashApptainerSetup"))
 
@@ -57,7 +63,8 @@ class ApptainerRunnerTest extends AnyFunSuite {
       name = "test_component",
       resources = List(
         BashScript(
-          text = Some("echo 'Hello World'")
+          text = Some("echo 'Hello World'"),
+          dest = Some("script.sh")
         )
       ),
       engines = List(
@@ -81,7 +88,7 @@ class ApptainerRunnerTest extends AnyFunSuite {
     assert(defFile.contains("From: ubuntu:20.04"))
 
     // Check for requirements
-    assert(defFile.contains("apt-get -y install curl"))
+    assert(defFile.contains("apt-get install -y curl"))
 
     // Check for labels
     assert(defFile.contains("%labels"))
@@ -97,7 +104,8 @@ class ApptainerRunnerTest extends AnyFunSuite {
       name = "test_component",
       resources = List(
         BashScript(
-          text = Some("echo 'Hello World'")
+          text = Some("echo 'Hello World'"),
+          dest = Some("script.sh")
         )
       ),
       engines = List(
